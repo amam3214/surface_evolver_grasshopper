@@ -1,4 +1,3 @@
-
 import os
 import sys
 import importlib
@@ -13,10 +12,9 @@ def reload_all_modules():
     for module_name in list(sys.modules.keys()):
         if "py_lib" in module_name:
             importlib.reload(sys.modules[module_name])
-## Execution ##
 
+## Execution ##
 def run_SE(arguments):
-    
     arguments['TEMP_FE_PATH'] = os.path.join(arguments['BASE_PATH'], r"temp_fe_file_for_grasshopper_script.fe")
     arguments['TEMP_DMP_PATH'] = os.path.join(arguments['BASE_PATH'], r"temp_fe_file_for_grasshopper_script.dmp")
     arguments['SE_PATH'] = os.path.join(arguments['BASE_PATH'], r"evolver.exe")
@@ -25,7 +23,6 @@ def run_SE(arguments):
         if not os.path.isfile(arguments['SE_PATH']):
             print("evolver executable not exists in the required path\n\n")
             return 
-
         
     fe_file_str = get_fe_str(arguments)
     with open(f"{arguments['TEMP_FE_PATH']}", "w") as temp_fe:
