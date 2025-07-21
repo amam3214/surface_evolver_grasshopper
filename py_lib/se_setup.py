@@ -1,5 +1,3 @@
-
-
 import os
 import pathlib
 
@@ -10,7 +8,7 @@ LEFT_CURLY_BRACKET = r"{"
 RIGHT_CURLY_BRACKET = r"}"
 
 ## Optimization ##
-def get_fe_str(arguments):
+def generate_fe_file_string(arguments):
     fe_file_str, x_length, y_length, z_length, initial_target_length = get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
     estimated_volume = x_length * y_length * z_length
 

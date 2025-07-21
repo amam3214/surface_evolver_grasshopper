@@ -1,11 +1,8 @@
 import Rhino
-from collections import defaultdict
 
 
-def extract_se_data_from_mesh(mesh, fixed_meshes):
-    assert(type(mesh) == Rhino.Geometry.Mesh)
-
-    verts = mesh.Vertices
+def extract_se_data_from_mesh(meshes, fixed_meshes):
+    verts = mesh.TopologyVertices
     edges = mesh.TopologyEdges
     faces = mesh.Faces
 
@@ -14,21 +11,18 @@ def extract_se_data_from_mesh(mesh, fixed_meshes):
     number_of_faces = faces.Count
 
     se_verts = verts
-    se_edges = [tuple(edges.GetTopologyVertices(i)) for i    in range(number_of_edges)]
-    se_faces = [tuple(edges.GetEdgesForFace(i))     for i    in range(number_of_faces)]
+    se_edges = [tuple(edges.GetTopologyVertices(i)) for i in range(number_of_edges)]
 
-    face_edge_to_flip = []
-    for i, face in enumerate(faces):
-        edge_to_flip = [0, 0, 0]
-        face_by_edges = se_faces[i]
-        verts_of_edges = [se_edges[i] for i in face_by_edges]
-        face_by_verts = (face.A, face.B, face.C)
+    se_faces = []
+    for i in range(number_of_faces):
+        face_by_edges = [idx + 1 for idx in edges.GetEdgesForFace(i)]
+        verts_of_edges = [se_edges[i-1] for i in face_by_edges]
+        face_by_verts = list(verts.IndicesFromFace(i))
         vert_pairs_of_face = list(zip(face_by_verts, face_by_verts[1:] + face_by_verts[:1]))
         for j, pair in enumerate(verts_of_edges):
             if pair not in vert_pairs_of_face:
-                edge_to_flip[j] = 1
-
-        face_edge_to_flip.append(tuple(edge_to_flip))
+                face_by_edges[j] *= -1
+        se_faces.append(tuple(face_by_edges))
 
     # mark fixed
     fixed_faces = [False] * number_of_faces
@@ -43,18 +37,18 @@ def extract_se_data_from_mesh(mesh, fixed_meshes):
         for p in face_pairs:
             fixed_face_index = p.I if p.I<number_of_faces else p.J
             fixed_faces[fixed_face_index] = True
-            for i in se_faces[fixed_face_index]:
+            for i in edges.GetEdgesForFace(fixed_face_index):
                 fixed_edges[i] = True
-            face = faces.GetFace(fixed_face_index)
-            fixed_verts[face.A] = True
-            fixed_verts[face.B] = True
-            fixed_verts[face.C] = True
+            for i in verts.IndicesFromFace(fixed_face_index):
+                fixed_verts[i] = True
 
     average_edge_length = sum([edges.EdgeLine(i).Length for i in range(number_of_edges)]) / number_of_edges
-    return se_verts, se_edges, se_faces, face_edge_to_flip, fixed_verts, fixed_edges, fixed_faces, average_edge_length
+    return se_verts, se_edges, se_faces, fixed_verts, fixed_edges, fixed_faces, average_edge_length
 
-def get_mesh_topology_for_fe(mesh, fixed_meshes):
-    se_verts, se_edges, se_faces, face_edge_to_flip, fixed_verts, fixed_edges, fixed_faces, average_edge_length = extract_se_data_from_mesh(mesh, fixed_meshes)
+def get_mesh_topology_for_fe(meshes, fixed_meshes):
+    # TODO: continue implementation
+    mesh = meshes[0]
+    se_verts, se_edges, se_faces, fixed_verts, fixed_edges, fixed_faces, average_edge_length = extract_se_data_from_mesh(mesh, fixed_meshes)
     gemotry_text = ""
     # Write vertices
     gemotry_text += 'vertices\n'
@@ -83,7 +77,7 @@ def get_mesh_topology_for_fe(mesh, fixed_meshes):
     for i, face in enumerate(se_faces):
         gemotry_text += f'{i+1}'
         for j, edge_of_face in enumerate(face):
-            gemotry_text += f' {(edge_of_face + 1) * (-1)**face_edge_to_flip[i][j]}'
+            gemotry_text += f' {edge_of_face}'
         if fixed_faces[i]:
             gemotry_text += ' fixed'
         gemotry_text += '\n'
