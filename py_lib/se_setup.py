@@ -9,12 +9,12 @@ RIGHT_CURLY_BRACKET = r"}"
 
 ## Optimization ##
 def generate_fe_file_string(arguments):
-    fe_file_str, x_length, y_length, z_length, initial_target_length = get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
-    estimated_volume = x_length * y_length * z_length
+    fe_file_str, volumes_of_mesh, initial_target_length = get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
 
     fe_file_str += f"read // Take and run SE commands from this file\n"
     fe_file_str += f"G 0; //\n"
-    fe_file_str += f"set body target {-estimated_volume * 0.5 * arguments['VOLUME_FACTOR']} where id == 1 // Sets the volume\n"
+    for i, volume in enumerate(volumes_of_mesh):
+        fe_file_str += f"set body target {volume * 0.5 * arguments['VOLUME_FACTOR']} where id == {i+1} // Sets the volume\n"
     if arguments['INTER_ACTIVE']:
         fe_file_str += f"s // Open graphics window\nq\n"
         fe_file_str += f'read "{os.path.join(arguments["BASE_PATH"], "surface_evolver_grasshopper", "se_lib", "docstring.ses")}"\n'.replace('\\', '\\\\')
@@ -34,17 +34,20 @@ def generate_fe_file_string(arguments):
     fe_file_str += f"remesh_step := {LEFT_CURLY_BRACKET}t target_length/4*3; l target_length/4*5; V 2; u; u;{RIGHT_CURLY_BRACKET}\n"
 
     if not arguments['INTER_ACTIVE']:
+        fe_file_str += 'U;'
         for r in range(arguments['R_INPUT']):
-            if r != 0:
-                fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-                fe_file_str += "target_length := target_length / 2;\n"
-                fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-            else:
-                fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-            fe_file_str += "optimize_step;\n"
-
-        fe_file_str += f"remesh_step; optimize_step; remesh_step; optimize_step; // Attempt better remeshing\n"
-        fe_file_str += f"optimize_step; loose_remesh_step; optimize_step; // finall settling down - stay true to the physics. \n"
+            fe_file_str += 'g;r;'
+        #     if r != 0:
+        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        #         fe_file_str += "target_length := target_length / 2;\n"
+        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        #     else:
+        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        #     fe_file_str += "optimize_step;\n"
+        #
+        # fe_file_str += f"remesh_step; optimize_step; remesh_step; optimize_step; // Attempt better remeshing\n"
+        # fe_file_str += f"optimize_step; loose_remesh_step; optimize_step; // finall settling down - stay true to the physics. \n"
+        fe_file_str += 'g 150;'
         fe_file_str += "dump_file\n"
         fe_file_str += "q\n"
         fe_file_str += "q\n"

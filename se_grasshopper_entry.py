@@ -48,10 +48,6 @@ def assert_input(args):
     
     for mesh in input_mesh:
         assert(type(mesh) == Rhino.Geometry.Mesh)
-        if mesh.Faces.QuadCount != 0: # enforce that all faces are triangles
-            mesh.Faces.ConvertQuadsToTriangles()
-        assert(mesh.Faces.QuadCount == 0)
-
         mesh.Vertices.CombineIdentical(True, True)
         assert(mesh.IsOriented)
         assert(mesh.IsClosed)
