@@ -1,6 +1,29 @@
 import Rhino
 
 
+TOLERANCE = 1e-5
+
+def find_mesh_faces_on_brep(mesh, brep):
+    mesh_faces_on_brep = []
+    brep_bbox = brep.GetBoundingBox(False)
+    for brep_face in brep.Faces:
+        got_plane, plane = brep_face.TryGetPlane()
+        if not got_plane:
+            face_bbox = brep_face.GetBoundingBox(False)
+            raise(AssertionError, f"brep bounded between {tuple(face_bbox.Min())} and {tuple(face_bbox.Max())} is not plannar.")
+
+        for i, mesh_face in enumerate(mesh.Faces):
+            face_center = mesh.Faces.GetFaceCenter(i)
+            if not brep_bbox.Contains(face_center): continue
+            if ( 
+                abs(plane.DistanceTo(face_center)) < TOLERANCE and
+                plane.Normal.IsParallelTo(mesh.FaceNormals[i])
+            ):
+                mesh_faces_on_brep.append(i)
+        
+    print(mesh_faces_on_brep)
+    return mesh_faces_on_brep
+
 def get_tuple_of_the_edges_of_a_face(face_number, verts, edges):
     edges_of_face = [idx+1 for idx in edges.GetEdgesForFace(face_number)]
     verts_of_edges = [tuple(edges.GetTopologyVertices(idx-1)) for idx in edges_of_face]
@@ -28,14 +51,18 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
     edges = mesh.TopologyEdges
     faces = mesh.Faces
 
-    faces_of_each_body_flat = [0] * faces.Count
-    interface_pairs = mesh.Faces.GetClashingFacePairs(0)
-    for pair in interface_pairs:
-        faces_of_each_body_flat[max(pair)] = - (min(pair)+1)
-    se_bodies = [0] * number_of_bodies
-
     number_of_edges = edges.Count
     number_of_verts = verts.Count
+
+    edges_on_interface = [False] * number_of_edges
+    faces_of_each_body_flat = [0] * faces.Count
+    interface_pairs = set(tuple(_) for _ in mesh.Faces.GetClashingFacePairs(0))
+    for pair in interface_pairs:
+        faces_of_each_body_flat[max(pair)] = - (min(pair)+1)
+        for i in edges.GetEdgesForFace(max(pair)):
+            edges_on_interface[i] = True
+    se_bodies = [0] * number_of_bodies
+
     number_of_faces = sum([i==0 for i in faces_of_each_body_flat])
 
     se_verts = verts
@@ -61,13 +88,16 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
     fixed_verts = [False] * number_of_verts
 
     for fixed in fixed_meshes:
-        combined_mesh = Rhino.Geometry.Mesh()
-        combined_mesh.Append(mesh)
-        combined_mesh.Append(fixed)
-        face_pairs = combined_mesh.Faces.GetClashingFacePairs(0)
-        for p in face_pairs:
-            if max(p) < faces.Count: continue
-            global_face_index = min(p)
+        # combined_mesh = Rhino.Geometry.Mesh()
+        # combined_mesh.Append(mesh)
+        # combined_mesh.Append(fixed)
+        # face_pairs = set(tuple(_) for _ in combined_mesh.Faces.GetClashingFacePairs(0))
+        # new_clashing_faces = face_pairs.difference(interface_pairs)
+        # print(new_clashing_faces)
+        # for p in new_clashing_faces:
+        #     global_face_index = min(p)
+        faces_to_make_fixed = find_mesh_faces_on_brep(mesh, fixed)
+        for global_face_index in faces_to_make_fixed:
             fixed_face_index = abs(faces_of_each_body_flat[global_face_index]) - 1
             if faces_of_each_body_flat[global_face_index] < 0: continue
             fixed_faces[fixed_face_index] = True
@@ -78,14 +108,15 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
 
     average_edge_length = sum([edges.EdgeLine(i).Length for i in range(number_of_edges)]) / number_of_edges
     mesh_bbox = mesh.GetBoundingBox(False)
-    return se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, volumes_of_mesh, average_edge_length, mesh_bbox
+    return se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length, mesh_bbox
 
 def get_mesh_topology_for_fe(meshes, fixed_meshes):
-    se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, volumes_of_mesh, average_edge_length, mesh_bbox = extract_se_data_from_mesh(meshes, fixed_meshes)
+    se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length, mesh_bbox = extract_se_data_from_mesh(meshes, fixed_meshes)
     min_X, min_Y, min_Z = mesh_bbox.Min
     max_X, max_Y, max_Z = mesh_bbox.Max
 
     gemotry_text = ""
+    gemotry_text += 'define edge attribute interface integer\n'
     # Write vertices
     gemotry_text += 'vertices\n'
     for i, v in enumerate(se_verts):
@@ -101,6 +132,8 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes):
         gemotry_text += f"{i+1} {edge[0]+1} {edge[1]+1}"
         if fixed_edges[i]:
             gemotry_text += ' fixed'
+        if edges_on_interface[i]:
+            gemotry_text += ' interface 1'
         gemotry_text += '\n'
     gemotry_text += '\n'
 
@@ -127,6 +160,7 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes):
 
     gemotry_text += 'read\n'  # additional commands to to Surface Evolver
     gemotry_text += 'N\n'  # Set target volume to actual volume
+    gemotry_text += 'set edge color green where interface == 1\n'
     gemotry_text += 'set face color 3 where fixed\n'
     gemotry_text += 'set edge color 4 where fixed\n'
 

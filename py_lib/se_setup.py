@@ -1,7 +1,7 @@
 import os
 import pathlib
 
-from py_lib.load_mesh import get_mesh_topology_for_fe
+import py_lib
 
 
 LEFT_CURLY_BRACKET = r"{"
@@ -9,12 +9,12 @@ RIGHT_CURLY_BRACKET = r"}"
 
 ## Optimization ##
 def generate_fe_file_string(arguments):
-    fe_file_str, volumes_of_mesh, initial_target_length = get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
+    fe_file_str, volumes_of_mesh, initial_target_length = py_lib.load_mesh.get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
 
     fe_file_str += f"read // Take and run SE commands from this file\n"
     fe_file_str += f"G 0; //\n"
     for i, volume in enumerate(volumes_of_mesh):
-        fe_file_str += f"set body target {volume * 0.5 * arguments['VOLUME_FACTOR']} where id == {i+1} // Sets the volume\n"
+        fe_file_str += f"set body target {volume * arguments['VOLUME_FACTOR']} where id == {i+1} // Sets the volume\n"
     if arguments['INTER_ACTIVE']:
         fe_file_str += f"s // Open graphics window\nq\n"
         fe_file_str += f'read "{os.path.join(arguments["BASE_PATH"], "surface_evolver_grasshopper", "se_lib", "docstring.ses")}"\n'.replace('\\', '\\\\')

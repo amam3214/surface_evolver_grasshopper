@@ -6,6 +6,7 @@ import Rhino
 def import_or_reload(name):
     if name in sys.modules:
         import importlib
+        importlib.invalidate_caches()
         return importlib.reload(sys.modules[name])
     return __import__(name)
 py_lib = import_or_reload("py_lib")
@@ -46,8 +47,12 @@ def assert_input(args):
     assert(hasattr(input_mesh, '__iter__'))
     assert(hasattr(input_boundary_conditions, '__iter__'))
     
-    for mesh in input_mesh:
+    for i, mesh in enumerate(input_mesh):
         assert(type(mesh) == Rhino.Geometry.Mesh)
         mesh.Vertices.CombineIdentical(True, True)
-        assert(mesh.IsOriented)
-        assert(mesh.IsClosed)
+        mesh.Vertices.CullUnused()
+        mesh.Faces.CullDegenerateFaces()
+        mesh.FaceNormals.ComputeFaceNormals()
+        assert mesh.IsManifold(), f"Mesh {i} is not a manifold."
+        assert mesh.IsOriented, f"Mesh {i} is not oriented."
+        assert mesh.IsClosed, f"Mesh {i} is not closed."
