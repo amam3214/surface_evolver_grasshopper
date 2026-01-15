@@ -1,6 +1,6 @@
-
-
 import re
+import os
+import Rhino
 
 
 SCALE_FACTOR = 1
@@ -81,3 +81,49 @@ def reconstruct_mesh(arguments, results_text):
     verts, faces, fixed_faces = create_mesh(results_text)
     arguments['result_mesh']['verts'], arguments['result_mesh']['faces'] = verts, faces
     arguments['result_fixed']['verts'], arguments['result_fixed']['faces'] = verts, fixed_faces
+
+def parse_se_stl(file_path):
+    """
+    Parses an ASCII STL from Surface Evolver and returns a welded Rhino Mesh.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return "Surface Evolver STL file not found"
+
+    temp_mesh = Rhino.Geometry.Mesh()
+    
+    # Read the file line-by-line
+    try:
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+    except IOError as e:
+        return "Error reading STL file: " + str(e)
+
+    # STL format: 3 "vertex" lines followed by "endloop"
+    for line in lines:
+        if "vertex" in line:
+            # Line format: "      vertex 1.234 5.678 9.012"
+            parts = line.split()
+            # parts[0] is 'vertex', parts[1..3] are coords
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
+            
+            temp_mesh.Vertices.Add(x, y, z)
+            
+        elif "endloop" in line:
+            # We just added 3 vertices. Create a face from them.
+            # The indices are the last 3 added.
+            cnt = temp_mesh.Vertices.Count
+            temp_mesh.Faces.AddFace(cnt - 3, cnt - 2, cnt - 1)
+
+    # STL is "triangle soup" (every face has its own unique 3 vertices).
+    # Therefore we weld adjacent veritces.
+    
+    # True, True = Ignore normals when merging, Delete unused vertices
+    temp_mesh.Vertices.CombineIdentical(True, True)
+    
+    # Cleanup
+    temp_mesh.Normals.ComputeNormals()
+    temp_mesh.Compact()
+    
+    return temp_mesh

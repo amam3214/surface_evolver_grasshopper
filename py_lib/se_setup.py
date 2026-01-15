@@ -4,12 +4,12 @@ import pathlib
 import py_lib
 
 
-LEFT_CURLY_BRACKET = r"{"
-RIGHT_CURLY_BRACKET = r"}"
+L_CURLY = r"{"
+R_CURLY = r"}"
 
 ## Optimization ##
 def generate_fe_file_string(arguments):
-    fe_file_str, volumes_of_mesh, initial_target_length = py_lib.load_mesh.get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"])
+    fe_file_str, volumes_of_mesh, initial_target_length = py_lib.load_mesh.get_mesh_topology_for_fe(arguments["input_mesh"], arguments["input_boundary_conditions"], arguments["boundary_curves"], arguments["approx_curves"])
 
     fe_file_str += f"read // Take and run SE commands from this file\n"
     fe_file_str += f"G 0; //\n"
@@ -20,37 +20,43 @@ def generate_fe_file_string(arguments):
         fe_file_str += f'read "{os.path.join(arguments["BASE_PATH"], "surface_evolver_grasshopper", "se_lib", "docstring.ses")}"\n'.replace('\\', '\\\\')
 
 
-    fe_file_str += f"optimize_step := {LEFT_CURLY_BRACKET} g; // A general function looking for minimum\n"
+    fe_file_str += f"optimize_step := {L_CURLY} g; // A general function looking for minimum\n"
     fe_file_str += f"    g {arguments['G_INPUT']};\n"
     fe_file_str += f"    hessian_seek;\n"
     fe_file_str += f"    hessian_seek;\n"
     fe_file_str += f"    o;\n"
-    fe_file_str += f"{RIGHT_CURLY_BRACKET}\n"
+    fe_file_str += f"{R_CURLY}\n"
     
-    path_for_fe = arguments['TEMP_DMP_PATH'].replace("\\", "\\\\")
-    fe_file_str += f'dump_file := {LEFT_CURLY_BRACKET} dump "{path_for_fe}" {RIGHT_CURLY_BRACKET}\n'
+    dmp_path = arguments['TEMP_DMP_PATH'].replace("\\", "\\\\")
+    stl_path = arguments['TEMP_STL_PATH'].replace("\\", "\\\\")
+    stl_cmd_path = os.path.join(arguments['BASE_PATH'], r"fe\stl.cmd").replace("\\", "\\\\")
+    fe_file_str += f"read \"{stl_cmd_path}\"\n"
+    fe_file_str += f'dump_file := {L_CURLY} dump "{dmp_path}" {R_CURLY}\n'
+    fe_file_str += f'dump_stl  := {L_CURLY} stl >>> \"{stl_path}\" {R_CURLY}\n'
     fe_file_str += f"target_length := {initial_target_length:.2f};\n"
-    fe_file_str += f"loose_remesh_step := {LEFT_CURLY_BRACKET}t target_length/16*9; l target_length/16*25; V 2; u; u;{RIGHT_CURLY_BRACKET}\n"
-    fe_file_str += f"remesh_step := {LEFT_CURLY_BRACKET}t target_length/4*3; l target_length/4*5; V 2; u; u;{RIGHT_CURLY_BRACKET}\n"
+    fe_file_str += f"loose_remesh_step := {L_CURLY}t target_length/16*9; l target_length/16*25; V 2; u; u;{R_CURLY}\n"
+    fe_file_str += f"remesh_step := {L_CURLY}t target_length/4*3; l target_length/4*5; V 2; u; u;{R_CURLY}\n"
 
     if not arguments['INTER_ACTIVE']:
-        fe_file_str += 'U;'
-        for r in range(arguments['R_INPUT']):
-            fe_file_str += 'g;r;'
-        #     if r != 0:
-        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-        #         fe_file_str += "target_length := target_length / 2;\n"
-        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-        #     else:
-        #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
-        #     fe_file_str += "optimize_step;\n"
-        #
-        # fe_file_str += f"remesh_step; optimize_step; remesh_step; optimize_step; // Attempt better remeshing\n"
-        # fe_file_str += f"optimize_step; loose_remesh_step; optimize_step; // finall settling down - stay true to the physics. \n"
-        fe_file_str += 'g 150;'
-        fe_file_str += "dump_file\n"
-        fe_file_str += "q\n"
-        fe_file_str += "q\n"
+        fe_file_str += 'dump_file; r 2; g 100; hessian; dump_stl; q; q;\n'
+        # fe_file_str += 'U;'
+        # for r in range(arguments['R_INPUT']):
+        #     fe_file_str += 'g;r;'
+        # #     if r != 0:
+        # #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        # #         fe_file_str += "target_length := target_length / 2;\n"
+        # #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        # #     else:
+        # #         fe_file_str += "loose_remesh_step; loose_remesh_step;\n"
+        # #     fe_file_str += "optimize_step;\n"
+        # #
+        # # fe_file_str += f"remesh_step; optimize_step; remesh_step; optimize_step; // Attempt better remeshing\n"
+        # # fe_file_str += f"optimize_step; loose_remesh_step; optimize_step; // finall settling down - stay true to the physics. \n"
+        # fe_file_str += 'g 150;'
+        # # fe_file_str += "dump_file\n"
+        # fe_file_str += f"stl >>> \"{stl_path}\"\n"
+        # fe_file_str += "q\n"
+        # fe_file_str += "q\n"
     else:
         fe_file_str += 'printf "\\n\\n\\n\\n\\n\\n\\n\\n"; print_help;'
     

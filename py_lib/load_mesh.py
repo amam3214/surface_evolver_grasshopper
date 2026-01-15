@@ -1,4 +1,5 @@
 import Rhino
+import math
 
 
 TOLERANCE = 1e-5
@@ -16,12 +17,11 @@ def find_mesh_faces_on_brep(mesh, brep):
             face_center = mesh.Faces.GetFaceCenter(i)
             if not brep_bbox.Contains(face_center): continue
             if ( 
-                abs(plane.DistanceTo(face_center)) < TOLERANCE and
+                abs(plane.DistanceTo(face_center)) < TOLERANCE and # TODO: Make tolerance relative to bbox size
                 plane.Normal.IsParallelTo(mesh.FaceNormals[i])
             ):
                 mesh_faces_on_brep.append(i)
         
-    print(mesh_faces_on_brep)
     return mesh_faces_on_brep
 
 def get_tuple_of_the_edges_of_a_face(face_number, verts, edges):
@@ -61,13 +61,13 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
         faces_of_each_body_flat[max(pair)] = - (min(pair)+1)
         for i in edges.GetEdgesForFace(max(pair)):
             edges_on_interface[i] = True
-    se_bodies = [0] * number_of_bodies
 
     number_of_faces = sum([i==0 for i in faces_of_each_body_flat])
 
     se_verts = verts
     se_edges = [tuple(edges.GetTopologyVertices(i)) for i in range(number_of_edges)]
     se_faces = [()] * number_of_faces
+    se_bodies = [0] * number_of_bodies
     face_count = 1
     for i, face in enumerate(faces):
         if (faces_of_each_body_flat[i] < 0): continue
@@ -88,14 +88,6 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
     fixed_verts = [False] * number_of_verts
 
     for fixed in fixed_meshes:
-        # combined_mesh = Rhino.Geometry.Mesh()
-        # combined_mesh.Append(mesh)
-        # combined_mesh.Append(fixed)
-        # face_pairs = set(tuple(_) for _ in combined_mesh.Faces.GetClashingFacePairs(0))
-        # new_clashing_faces = face_pairs.difference(interface_pairs)
-        # print(new_clashing_faces)
-        # for p in new_clashing_faces:
-        #     global_face_index = min(p)
         faces_to_make_fixed = find_mesh_faces_on_brep(mesh, fixed)
         for global_face_index in faces_to_make_fixed:
             fixed_face_index = abs(faces_of_each_body_flat[global_face_index]) - 1
@@ -107,20 +99,52 @@ def extract_se_data_from_mesh(meshes, fixed_meshes):
                 fixed_verts[i] = True
 
     average_edge_length = sum([edges.EdgeLine(i).Length for i in range(number_of_edges)]) / number_of_edges
-    mesh_bbox = mesh.GetBoundingBox(False)
-    return se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length, mesh_bbox
+    return se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length
 
-def get_mesh_topology_for_fe(meshes, fixed_meshes):
-    se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length, mesh_bbox = extract_se_data_from_mesh(meshes, fixed_meshes)
-    min_X, min_Y, min_Z = mesh_bbox.Min
-    max_X, max_Y, max_Z = mesh_bbox.Max
+def get_mesh_topology_for_fe(meshes, fixed_meshes, ideal_curves, approx_curves):
+    se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length = extract_se_data_from_mesh(meshes, fixed_meshes)
 
     gemotry_text = ""
     gemotry_text += 'define edge attribute interface integer\n'
+
+    # Write boundary constraints
+    for i, curve in enumerate(ideal_curves):
+        success, circle = curve.TryGetCircle()
+        assert success, f"Could not convert boundary curve {i+1} to circle"
+
+        radius = circle.Radius
+        center = circle.Center
+        x_axis = circle.Plane.XAxis
+        y_axis = circle.Plane.YAxis
+        gemotry_text += f'boundary {i+1} parameters 1\n'
+        for j in range(3):
+            gemotry_text += f'x{j+1}: {center[j]} + {radius} * ( {x_axis[j]} * cos(p1) + {y_axis[j]} * sin(p1) )\n'
+        gemotry_text += f'\n'
+
     # Write vertices
+    vert_on_boundary = [0] * se_verts.Count
     gemotry_text += 'vertices\n'
     for i, v in enumerate(se_verts):
-        gemotry_text += f"{i+1} {v.X + -(max_X - min_X) * 1.1:.2f} {v.Y:.2f} {v.Z:.2f}"
+        on_boundary = False
+        for j, curve in enumerate(approx_curves):
+            ideal = ideal_curves[j]
+            success, t = curve.ClosestPoint(v)
+            assert success
+            if (abs(curve.PointAt(t).DistanceTo(v)) < TOLERANCE * curve.GetLength()):
+                success, t = ideal.ClosestPoint(v)
+                assert success
+                on_boundary = True
+                # We encode the presence of a vertex on a boundry curve in binary representation.
+                # The `1 << j` operation shifts the number 1 j bits to the left.
+                # Because Python integer has no fixed size, we can represent any number of combination
+                # limited only by the machine's memory.
+                # This uniquely defines on what curves a certain vertex is on.
+                vert_on_boundary[i] += (1 << j)
+                gemotry_text += f"{i+1} {t * 2 * math.pi / ideal.Domain.Length}"
+                gemotry_text += f' boundary {j+1}'
+                break
+        if not on_boundary:
+            gemotry_text += f"{i+1} {v.X:.2f} {v.Y:.2f} {v.Z:.2f}"
         if fixed_verts[i]:
             gemotry_text += ' fixed'
         gemotry_text += '\n'
@@ -129,11 +153,26 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes):
     # Write edges
     gemotry_text += 'edges\n'
     for i, edge in enumerate(se_edges):
-        gemotry_text += f"{i+1} {edge[0]+1} {edge[1]+1}"
-        if fixed_edges[i]:
-            gemotry_text += ' fixed'
+        v0, v1 = edge
+        gemotry_text += f"{i+1} {v0+1} {v1+1}"
+        # if fixed_edges[i]:
+        #     gemotry_text += ' fixed'
         if edges_on_interface[i]:
             gemotry_text += ' interface 1'
+        # Recall that `vert_on_boundary` hold binary encoding of which boundary curve does a certain
+        # vertex belongs to.
+        # The `&` operation does a bitwise-and of the values.
+        # Wherever two entires have matching bits it means that they are both on that edge.
+        # Here, they should share not more than 1 bit, otherwise both vertices share multiple edges,
+        # and hence they coincide.
+        # We check this using the assertion with the bitwise-xor operation, `^`.
+        # We xor the result of the previous bit-and with a binary encoding of the boundary
+        # we found using the `bit_length` method.
+        bitand_verts = vert_on_boundary[v0] & vert_on_boundary[v1]
+        if (bitand_verts != 0):
+            curve_number = bitand_verts.bit_length()
+            assert (not (bitand_verts ^ (1<<(curve_number-1)))), f"Vertices {v0} and {v1} share more than a single boundary curve"
+            gemotry_text += f' fixed boundary {curve_number}'
         gemotry_text += '\n'
     gemotry_text += '\n'
 
@@ -145,7 +184,7 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes):
         for edge_of_face in face:
             gemotry_text += f' {edge_of_face}'
         if fixed_faces[i]:
-            gemotry_text += ' fixed'
+            gemotry_text += ' fixed no_refine'
         gemotry_text += '\n'
     gemotry_text += '\n'
 
