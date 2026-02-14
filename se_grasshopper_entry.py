@@ -16,7 +16,7 @@ py_lib = import_or_reload("py_lib")
 
 ## Execution ##
 def main(args):
-    assert_input(args)
+    assert_input(args, do_assert=True)
     args["approx_curves"] = match_boundaries(args)
 
     args['TEMP_FE_PATH'] = os.path.join(args['BASE_PATH'], r"temp_fe_file_for_grasshopper_script.fe")

@@ -15,10 +15,10 @@ def find_mesh_faces_on_brep(mesh, brep):
 
         for i, mesh_face in enumerate(mesh.Faces):
             face_center = mesh.Faces.GetFaceCenter(i)
-            if not brep_bbox.Contains(face_center): continue
+            closest = brep_bbox.ClosestPoint(face_center)
             if ( 
-                abs(plane.DistanceTo(face_center)) < TOLERANCE and # TODO: Make tolerance relative to bbox size
-                plane.Normal.IsParallelTo(mesh.FaceNormals[i])
+                abs(closest.DistanceToSquared(face_center)) < (TOLERANCE**2 * brep_bbox.Area) and # TODO: Make tolerance relative to bbox size
+                    plane.Normal.IsParallelTo(mesh.FaceNormals[i])
             ):
                 mesh_faces_on_brep.append(i)
         
@@ -178,7 +178,6 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes, ideal_curves, approx_curves):
 
     # Write faces
     gemotry_text += 'faces\n'
-    face_index = 1
     for i, face in enumerate(se_faces):
         gemotry_text += f'{i+1}'
         for edge_of_face in face:
