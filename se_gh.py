@@ -5,7 +5,6 @@ import subprocess
 
 # TODO:
 # - Add the interface feature and multibodies
-# - Add stuff, if missing, to the read section of the code gen
 
 
 TOLERANCE = 1e-5
@@ -21,24 +20,34 @@ def main(
     # set up paths
     evolver_path = os.path.join(base_path, r"evolver.exe")
     tmp_path = os.path.join(base_path, r"tmp.fe")
-    dmp_path = os.path.join(base_path, r"dmp.fe")
-    stl_path = os.path.join(base_path, r"stl.fe")
+    dmp_path = os.path.join(base_path, r"tmp.dmp").replace("\\", "\\\\")
+    stl_path = os.path.join(base_path, r"tmp.stl").replace("\\", "\\\\")
+    stl_cmd_path = os.path.join(base_path, r"fe\stl.cmd").replace("\\", "\\\\")
+
     if not os.path.isfile(evolver_path):
         raise FileExistsError(f"Could not find evolver executable at: {evolver_path}")
 
+    apprx_bcs = match_boundaries(ideal_bcs, apprx_bcs)
+
     # set up buffer for evolver code
     se_code = []
-    get_evolver_data(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs)
+    evolver_codegen(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs)
+    se_code.append(f"read \"{stl_cmd_path}\"\n")
+    se_code.append(f"dump_file := {{ dump \"{dmp_path}\" }} \n")
+    se_code.append(f"dump_stl  := {{ stl >>> \"{stl_path}\" }} \n")
+
+    se_code.append(f"s // open graphic window\nq\n")
+    # se_code.append(f"r 2; u; g 100; hessian; dump_stl; q; q;")
 
     with open(tmp_path, "w") as tmp:
         tmp.write(''.join(se_code))
 
-    # subprocess.run([evolver_path, tmp_path])
+    subprocess.run([evolver_path, tmp_path])
 
-    apprx_bcs = match_boundaries(ideal_bcs, apprx_bcs)
-    return
+    out_mesh = parse_se_stl(stl_path)
+    return out_mesh
 
-def get_evolver_data(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs):
+def evolver_codegen(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs):
     brep = Rhino.Geometry.Brep.MergeBreps(bodies, Rhino.RhinoMath.ZeroTolerance)
     verts = brep.Vertices
     edges = brep.Edges
@@ -124,7 +133,7 @@ def get_evolver_data(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs):
         v1 = e.EndVertex.VertexIndex
         se_code.append(f"{i+1} {v0+1} {v1+1}")
         if interface_edges[i]:
-            assert false, "todo"
+            assert False, "todo"
             se_code.appned(" interface 1")
         # Recall that `vert_boundary_encoding` hold binary encoding of which vertex is on a certain boundary.
         # The `&` operation does a bitwise-and of the values.
@@ -153,10 +162,17 @@ def get_evolver_data(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs):
         face_normal = face_plane.Normal
         face_edges = f.AdjacentEdges()
         face_edges_count = len(face_edges)
-        trims_vert_pairs = [(t.StartVertex.VertexIndex, t.EndVertex.VertexIndex) for t in f.OuterLoop.Trims]
-        edges_vert_pairs = [(edges[j].StartVertex.VertexIndex, edges[j].EndVertex.VertexIndex) for j in f.AdjacentEdges()]
+        trims_vert_pairs = []
+        for l in f.Loops:
+            trims_vert_pairs += [(t.StartVertex.VertexIndex, t.EndVertex.VertexIndex) for t in l.Trims]
+        edges_vert_pairs = [(edges[j].StartVertex.VertexIndex, edges[j].EndVertex.VertexIndex) for j in face_edges]
+
+        # loc_trims = [(lambda _: (_.X, _.Y, _.Z))(t.StartVertex.Location) for t in f.OuterLoop.Trims]
+        # loc_edges = [(lambda _: (_.X, _.Y, _.Z))(edges[j].StartVertex.Location) for j in face_edges]
 
         for j in range(face_edges_count):
+            # print(j, trims_vert_pairs, edges_vert_pairs)
+            # print(j, loc_trims, loc_edges)
             if (trims_vert_pairs[j] == edges_vert_pairs[j]):
                 se_code.append(f" {face_edges[j]+1}")
             elif (trims_vert_pairs[j] == edges_vert_pairs[j][::-1]):
@@ -178,13 +194,12 @@ def get_evolver_data(se_code, bodies, surface_bcs, ideal_bcs, apprx_bcs):
 
     # read section
     se_code.append(f"read // Take and run SE commands from this file\n")
-    se_code.append("set edge color green where interface == 1\n")
-    se_code.append("set face color 3 where fixed\n")
-    se_code.append("set edge color 4 where fixed\n")
+    se_code.append(f"set edge color green where interface == 1\n")
+    se_code.append(f"set face color 3 where fixed\n")
+    se_code.append(f"set edge color 4 where fixed\n")
 
     se_code.append(f"G 0\n")
     se_code.append(f"set body target {brep.GetVolume()} where id==1\n")
-    se_code.append(f"s // open graphic window\nq\n")
     se_code.append(f"\n")
     return
 
@@ -207,3 +222,50 @@ def match_boundaries(ideal_bcs, apprx_bcs):
     assert len(ideal_bcs) == len(new_apprx_bcs), f"Could not match all apprximate and ideal curves: {len(new_apprx_bcs)}/{len(ideal_bcs)} matched"
 
     return new_apprx_bcs
+
+def parse_se_stl(file_path):
+    """
+    Parses an ASCII STL from Surface Evolver and returns a welded Rhino Mesh.
+    """
+    if not file_path or not os.path.exists(file_path):
+        return "Surface Evolver STL file not found"
+
+    temp_mesh = Rhino.Geometry.Mesh()
+    
+    # Read the file line-by-line
+    try:
+        with open(file_path, 'r') as f:
+            lines = f.readlines()
+    except IOError as e:
+        return "Error reading STL file: " + str(e)
+
+    # STL format: 3 "vertex" lines followed by "endloop"
+    for line in lines:
+        if "vertex" in line:
+            # Line format: "      vertex 1.234 5.678 9.012"
+            parts = line.split()
+            # parts[0] is 'vertex', parts[1..3] are coords
+            x = float(parts[1])
+            y = float(parts[2])
+            z = float(parts[3])
+            
+            temp_mesh.Vertices.Add(x, y, z)
+            
+        elif "endloop" in line:
+            # We just added 3 vertices. Create a face from them.
+            # The indices are the last 3 added.
+            cnt = temp_mesh.Vertices.Count
+            temp_mesh.Faces.AddFace(cnt - 3, cnt - 2, cnt - 1)
+
+    # STL is "triangle soup" (every face has its own unique 3 vertices).
+    # Therefore we weld adjacent veritces.
+    
+    # True, True = Ignore normals when merging, Delete unused vertices
+    temp_mesh.Vertices.CombineIdentical(True, True)
+    
+    # Cleanup
+    temp_mesh.Normals.ComputeNormals()
+    temp_mesh.Compact()
+    
+    return temp_mesh
+
