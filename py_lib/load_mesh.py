@@ -203,3 +203,4 @@ def get_mesh_topology_for_fe(meshes, fixed_meshes, ideal_curves, approx_curves):
     gemotry_text += 'set edge color 4 where fixed\n'
 
     return gemotry_text, volumes_of_mesh, average_edge_length
+
