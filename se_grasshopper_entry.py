@@ -2,6 +2,7 @@ import os
 import sys
 import subprocess
 import Rhino
+import platform
 
 TOLERANCE = 1e-5
 
@@ -27,13 +28,24 @@ def main(args):
         args['SE_PATH'] = os.path.join(args['BASE_PATH'], r"evolver")
         if not os.path.isfile(args['SE_PATH']):
             print("evolver executable not exists in the required path\n\n")
-            return 
+            return
         
     fe_file_string = py_lib.se_setup.generate_fe_file_string(args)
     with open(f"{args['TEMP_FE_PATH']}", "w") as temp_fe:
         temp_fe.write(fe_file_string)
 
-    subprocess.run([f"{args['SE_PATH']}", f"{args['TEMP_FE_PATH']}"])
+    system = platform.system()
+    if system == "Windows":
+        subprocess.run([f"{args['SE_PATH']}", f"{args['TEMP_FE_PATH']}"])
+    elif system == "Darwin":
+        mac_cmd = f"'{args['SE_PATH']}' '{args['TEMP_FE_PATH']}'"
+        apple_script = f'''
+        tell application "Terminal"
+            activate
+            do script "{mac_cmd}"
+        end tell
+        '''
+        subprocess.run(["osascript", "-e", apple_script])
 
     # if not os.path.isfile(args['TEMP_STL_PATH']):
     #     print("Surface Evolver Failed")
