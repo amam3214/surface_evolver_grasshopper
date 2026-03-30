@@ -1,271 +1,206 @@
+import Rhino
+import math
 
 
-from collections import defaultdict
+TOLERANCE = 1e-5
 
+def find_mesh_faces_on_brep(mesh, brep):
+    mesh_faces_on_brep = []
+    brep_bbox = brep.GetBoundingBox(False)
+    for brep_face in brep.Faces:
+        got_plane, plane = brep_face.TryGetPlane()
+        if not got_plane:
+            face_bbox = brep_face.GetBoundingBox(False)
+            raise(AssertionError, f"brep bounded between {tuple(face_bbox.Min())} and {tuple(face_bbox.Max())} is not plannar.")
 
-NORMAL_DIRECTION = -1
-LARGE_NUM = 10000000
-
-
-class Context:
-    def __init__(self):
-        self.vertex_indices = {}
-        self.fixed_vertices = []
-        self.edge_indices = {}
-        self.fixed_edges = []
-        self.faces = []
-        self.fixed_faces = []
-        self.bodies = []
+        for i, mesh_face in enumerate(mesh.Faces):
+            face_center = mesh.Faces.GetFaceCenter(i)
+            closest = brep_bbox.ClosestPoint(face_center)
+            if ( 
+                abs(closest.DistanceToSquared(face_center)) < (TOLERANCE**2 * brep_bbox.Area) and # TODO: Make tolerance relative to bbox size
+                    plane.Normal.IsParallelTo(mesh.FaceNormals[i])
+            ):
+                mesh_faces_on_brep.append(i)
         
+    return mesh_faces_on_brep
 
-def get_mesh_data(mesh, holes, c):
-    main_mesh = c is None
-    print("Processing mesh, main_mesh:", main_mesh)
-    if main_mesh:
-        c = Context()
-    
-    # Extract vertices
-    # Create a dictionary to map vertex positions to their indices. Vertices indexing begins from 0
-    start_index = len(c.vertex_indices)
-    vertex_index = start_index + 1  # Start from 1 for Surface Evolver compatibility
-    for i in range(mesh.Vertices.Count):
-        vertex = mesh.Vertices.Point3dAt(i)
-        if vertex not in c.vertex_indices:
-            c.vertex_indices[vertex] = vertex_index
-            vertex_index += 1
+def get_tuple_of_the_edges_of_a_face(face_number, verts, edges):
+    edges_of_face = [idx+1 for idx in edges.GetEdgesForFace(face_number)]
+    verts_of_edges = [tuple(edges.GetTopologyVertices(idx-1)) for idx in edges_of_face]
+    verts_of_face = list(verts.IndicesFromFace(face_number))
+    vert_pairs_for_face = list(zip(verts_of_face, verts_of_face[1:] + verts_of_face[:1]))
+    for j, pair in enumerate(verts_of_edges):
+        if pair not in vert_pairs_for_face:
+            edges_of_face[j] *= -1
+    return tuple(edges_of_face)
 
-    # Create a map to make unique vertices ids
-    vertex_i_to_unique_id = {}
-    for i in range(mesh.Vertices.Count):
-        vertex_i_to_unique_id[i] = c.vertex_indices[mesh.Vertices.Point3dAt(i)]  
-    
-    # Extract edges
-    # Extract faces and identify fixed edges. Edges indexing begins from 1
-    c.fixed_edges += [1] * (mesh.Faces.Count *3)
-    
-    start_edge_index = len(c.edge_indices) + 1
-    edge_index = start_edge_index
-    c.fixed_vertices += [0] * len(mesh.Vertices)
+def extract_se_data_from_mesh(meshes, fixed_meshes):
+    # bodies
+    number_of_bodies = len(list(meshes))
+    number_of_faces_of_each_body = [0] * number_of_bodies
+    accumulating_number_of_faces = [0] * (number_of_bodies+1)
+    volumes_of_mesh              = [0] * number_of_bodies
+    mesh = Rhino.Geometry.Mesh()
+    for i, this_mesh in enumerate(meshes):
+        mesh.Append(this_mesh)
+        number_of_faces_of_each_body[i] = this_mesh.Faces.Count
+        accumulating_number_of_faces[i+1] = mesh.Faces.Count
+        volumes_of_mesh[i] = this_mesh.Volume()
 
-    start_face_index = len(c.faces) + 1
-    c.bodies.append([])
-    for i in range(mesh.Faces.Count):
-        face = mesh.Faces[i]
-        face_vertices = [vertex_i_to_unique_id[face.A], vertex_i_to_unique_id[face.B], vertex_i_to_unique_id[face.C]]
+    verts = mesh.TopologyVertices
+    edges = mesh.TopologyEdges
+    faces = mesh.Faces
 
-        face_edges = []
-        for j in range(len(face_vertices)):
-            edge = (face_vertices[j], face_vertices[(j + 1) % len(face_vertices)])
-            
-            # Ensure the edge is ordered consistently
-            if (edge[0], edge[1]) in c.edge_indices.keys():
-                index = c.edge_indices[(edge[0], edge[1])]
-                face_edges.append(index)
-                c.fixed_edges[index] = 0
+    number_of_edges = edges.Count
+    number_of_verts = verts.Count
 
-            elif (edge[1], edge[0]) in c.edge_indices.keys():
-                index = c.edge_indices[(edge[1], edge[0])]
-                face_edges.append(-index)
-                c.fixed_edges[index] = 0
-                    
-            else:
-                c.edge_indices[edge] = edge_index
-                face_edges.append(edge_index)
-                edge_index += 1
-         
-        c.faces.append(face_edges)
-        c.bodies[-1].append(NORMAL_DIRECTION * (start_face_index + i))
-        if not main_mesh:
-            c.bodies[0].append( - NORMAL_DIRECTION * (start_face_index + i))
+    edges_on_interface = [False] * number_of_edges
+    faces_of_each_body_flat = [0] * faces.Count
+    interface_pairs = set(tuple(_) for _ in mesh.Faces.GetClashingFacePairs(0))
+    for pair in interface_pairs:
+        faces_of_each_body_flat[max(pair)] = - (min(pair)+1)
+        for i in edges.GetEdgesForFace(max(pair)):
+            edges_on_interface[i] = True
 
+    number_of_faces = sum([i==0 for i in faces_of_each_body_flat])
 
-    # Identify fixed vertices
-    for edge in c.edge_indices.keys():
-        if c.fixed_edges[c.edge_indices[edge]] == 1:
-            c.fixed_vertices[edge[0]] = 1
-            c.fixed_vertices[edge[1]] = 1
+    se_verts = verts
+    se_edges = [tuple(edges.GetTopologyVertices(i)) for i in range(number_of_edges)]
+    se_faces = [()] * number_of_faces
+    se_bodies = [0] * number_of_bodies
+    face_count = 1
+    for i, face in enumerate(faces):
+        if (faces_of_each_body_flat[i] < 0): continue
+        faces_of_each_body_flat[i] = face_count
 
+        edges_of_face = get_tuple_of_the_edges_of_a_face(i, verts, edges)
+        se_faces[face_count-1] = edges_of_face
 
+        face_count += 1
 
-    # Create fixed faces
-    edges_map = defaultdict(tuple)
-    for edge in c.edge_indices:
-        if c.fixed_edges[c.edge_indices[edge]] == 1 and len(edge) == 2:
-            edges_map[edge[0]] = edge
-    
-    visited_edges = [1] * start_edge_index + [0] * (len(c.edge_indices) + 1 - start_edge_index)
+    for i in range(number_of_bodies):
+        lo, hi = accumulating_number_of_faces[i:i+2]
+        se_bodies[i] = tuple(faces_of_each_body_flat[lo:hi])
 
-    for edge in c.edge_indices:
-        i = c.edge_indices[edge]
-        if visited_edges[i] == 0 and c.fixed_edges[i] == 1:
-            start_edge = edge
-            cur_edge = start_edge
-            face_edges = [i]
-            visited_edges[i] = 1
-            next_vertex = cur_edge[1]
-            
-            while 1:
-                #print(next_vertex)
-                if next_vertex not in edges_map.keys():
-                    continue
+    # mark fixed
+    fixed_faces = [False] * number_of_faces
+    fixed_edges = [False] * number_of_edges
+    fixed_verts = [False] * number_of_verts
 
-                next_edge = edges_map[next_vertex]
-                if next_edge == start_edge:
-                    break
+    for fixed in fixed_meshes:
+        faces_to_make_fixed = find_mesh_faces_on_brep(mesh, fixed)
+        for global_face_index in faces_to_make_fixed:
+            fixed_face_index = abs(faces_of_each_body_flat[global_face_index]) - 1
+            if faces_of_each_body_flat[global_face_index] < 0: continue
+            fixed_faces[fixed_face_index] = True
+            for i in edges.GetEdgesForFace(global_face_index):
+                fixed_edges[i] = True
+            for i in verts.IndicesFromFace(global_face_index):
+                fixed_verts[i] = True
 
-                #print(next_edge)
-                next_edge_index = c.edge_indices[next_edge]
-                face_edges.append(next_edge_index)
-                visited_edges[next_edge_index] = 1 
-                cur_edge = next_edge
-                next_vertex = next_edge[1]
-            c.fixed_faces.append(face_edges)
-            c.bodies[-1].append( - NORMAL_DIRECTION * (LARGE_NUM + len(c.fixed_faces)))
-            if not main_mesh:
-                c.bodies[0].append(NORMAL_DIRECTION * (LARGE_NUM + len(c.fixed_faces)))
+    average_edge_length = sum([edges.EdgeLine(i).Length for i in range(number_of_edges)]) / number_of_edges
+    return se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length
 
+def get_mesh_topology_for_fe(meshes, fixed_meshes, ideal_curves, approx_curves):
+    se_verts, se_edges, se_faces, se_bodies, fixed_verts, fixed_edges, fixed_faces, edges_on_interface, volumes_of_mesh, average_edge_length = extract_se_data_from_mesh(meshes, fixed_meshes)
 
-    # Get more boundary conditions
-    for holes_mesh in holes:
-        if holes_mesh is None or holes_mesh.Vertices.Count == 0:
-            continue
-        for i in range(holes_mesh.Faces.Count):
-            face = holes_mesh.Faces[i]
-            try:
-                v1 = c.vertex_indices[holes_mesh.Vertices.Point3dAt(face.A)]
-                v2 = c.vertex_indices[holes_mesh.Vertices.Point3dAt(face.B)]
-                v3 = c.vertex_indices[holes_mesh.Vertices.Point3dAt(face.C)]
-            except KeyError:
-                print("Boundary mesh has points not on input mesh, skipping.")
-                continue
-
-            c.fixed_vertices[v1] = 1
-            c.fixed_vertices[v2] = 1
-            c.fixed_vertices[v3] = 1
-
-            face_vertices = [v1, v2, v3]
-            face_edges = []
-
-            for j in range(len(face_vertices)):
-                edge = (face_vertices[j], face_vertices[(j + 1) % len(face_vertices)])
-
-                # Ensure the edge is ordered consistently
-                if edge in c.edge_indices.keys():
-                    face_edges.append(c.edge_indices[edge])
-
-                else:
-                    edge = (edge[1], edge[0])
-                    face_edges.append(-c.edge_indices[edge])
-
-                c.fixed_edges[c.edge_indices[edge]] = 1
-
-            if face_edges not in c.faces:
-                face_edges = [face_edges[1], face_edges[2], face_edges[0]]
-
-            if face_edges not in c.faces:
-                face_edges = [face_edges[2], face_edges[0], face_edges[1]]
-
-            if face_edges not in c.faces:
-                print("error face not found")
-            else:
-                c.faces.remove(face_edges)
-                c.fixed_faces.append(face_edges)
-
-    edge_length_sum_none_fixed = 0
-    edge_count_none_fixed = 0
-    for edge in c.edge_indices.keys():
-        if c.fixed_edges[c.edge_indices[edge]] != 1:
-            v1 = edge[0]
-            v2 = edge[1]
-            edge_length_sum_none_fixed += ((mesh.Vertices.Point3dAt(v1) - mesh.Vertices.Point3dAt(v2)).Length)
-            edge_count_none_fixed += 1
-    
-    return c, edge_length_sum_none_fixed/edge_count_none_fixed
-
-
-def parse_mesh(mesh, holes, c=None):
-    if mesh is None:
-        return {}, [], {}, [], [], []
-    
-    return get_mesh_data(mesh, holes, c=c)
-
-
-def get_mesh_topology_for_fe(arguments):
-    context, edge_length_avg_none_fixed = parse_mesh(arguments["input_mesh"], arguments["input_boundary_conditions"])
-    for mesh in arguments["inner_meshes"]:
-        context, _ = get_mesh_data(mesh, [], c=context)
     gemotry_text = ""
+    gemotry_text += 'define edge attribute interface integer\n'
+
+    # Write boundary constraints
+    for i, curve in enumerate(ideal_curves):
+        success, circle = curve.TryGetCircle()
+        assert success, f"Could not convert boundary curve {i+1} to circle"
+
+        radius = circle.Radius
+        center = circle.Center
+        x_axis = circle.Plane.XAxis
+        y_axis = circle.Plane.YAxis
+        gemotry_text += f'boundary {i+1} parameters 1\n'
+        for j in range(3):
+            gemotry_text += f'x{j+1}: {center[j]} + {radius} * ( {x_axis[j]} * cos(p1) + {y_axis[j]} * sin(p1) )\n'
+        gemotry_text += f'\n'
+
     # Write vertices
+    vert_on_boundary = [0] * se_verts.Count
     gemotry_text += 'vertices\n'
-    init = True
-    for v, i in context.vertex_indices.items():
-        if init:
-            init = False
-            max_X, max_Y, max_Z, min_X, min_Y, min_Z = v.X, v.Y, v.Z, v.X, v.Y, v.Z
-        if v.X > max_X:
-            max_X = v.X
-        if v.Y > max_Y:
-            max_Y = v.Y
-        if v.Z > max_Z:
-            max_Z = v.Z
-        if v.X < min_X:
-            min_X = v.X
-        if v.Y < min_Y:
-            min_Y = v.Y
-        if v.Z < min_Z:
-            min_Z = v.Z
-    for v, i in context.vertex_indices.items():
-        if context.fixed_vertices[i] == 0:
-            gemotry_text += f"{i+1} {v.X + (max_X - min_X) * 1.6:.2f} {v.Y:.2f} {v.Z:.2f}\n"
-        else:
-            gemotry_text += f"{i+1} {v.X + (max_X - min_X) * 1.6:.2f} {v.Y:.2f} {v.Z:.2f} fixed\n"
+    for i, v in enumerate(se_verts):
+        on_boundary = False
+        for j, curve in enumerate(approx_curves):
+            ideal = ideal_curves[j]
+            success, t = curve.ClosestPoint(v)
+            assert success
+            if (abs(curve.PointAt(t).DistanceTo(v)) < TOLERANCE * curve.GetLength()):
+                success, t = ideal.ClosestPoint(v)
+                assert success
+                on_boundary = True
+                # We encode the presence of a vertex on a boundry curve in binary representation.
+                # The `1 << j` operation shifts the number 1 j bits to the left.
+                # Because Python integer has no fixed size, we can represent any number of combination
+                # limited only by the machine's memory.
+                # This uniquely defines on what curves a certain vertex is on.
+                vert_on_boundary[i] += (1 << j)
+                gemotry_text += f"{i+1} {t * 2 * math.pi / ideal.Domain.Length}"
+                gemotry_text += f' boundary {j+1}'
+                break
+        if not on_boundary:
+            gemotry_text += f"{i+1} {v.X:.2f} {v.Y:.2f} {v.Z:.2f}"
+        if fixed_verts[i]:
+            gemotry_text += ' fixed'
+        gemotry_text += '\n'
+    gemotry_text += '\n'
         
     # Write edges
-    gemotry_text += '\nedges\n'
-    for edge, index in context.edge_indices.items():
-        if context.fixed_edges[index] == 0:
-            gemotry_text += f"{index}\t{edge[0]+1} {edge[1]+1}\n"
-        else:
-            gemotry_text += f"{index}\t{edge[0]+1} {edge[1]+1} fixed\n"
+    gemotry_text += 'edges\n'
+    for i, edge in enumerate(se_edges):
+        v0, v1 = edge
+        gemotry_text += f"{i+1} {v0+1} {v1+1}"
+        # if fixed_edges[i]:
+        #     gemotry_text += ' fixed'
+        if edges_on_interface[i]:
+            gemotry_text += ' interface 1'
+        # Recall that `vert_on_boundary` hold binary encoding of which boundary curve does a certain
+        # vertex belongs to.
+        # The `&` operation does a bitwise-and of the values.
+        # Wherever two entires have matching bits it means that they are both on that edge.
+        # Here, they should share not more than 1 bit, otherwise both vertices share multiple edges,
+        # and hence they coincide.
+        # We check this using the assertion with the bitwise-xor operation, `^`.
+        # We xor the result of the previous bit-and with a binary encoding of the boundary
+        # we found using the `bit_length` method.
+        bitand_verts = vert_on_boundary[v0] & vert_on_boundary[v1]
+        if (bitand_verts != 0):
+            curve_number = bitand_verts.bit_length()
+            assert (not (bitand_verts ^ (1<<(curve_number-1)))), f"Vertices {v0} and {v1} share more than a single boundary curve"
+            gemotry_text += f' fixed boundary {curve_number}'
+        gemotry_text += '\n'
+    gemotry_text += '\n'
 
     # Write faces
-    gemotry_text += '\nfaces\n'
-    face_index = 1
-    for face in context.faces:
-        single_line = " ".join(map(str, face))
-        gemotry_text += f"{face_index}\t{single_line}\n"
-        face_index+=1
-    for face in context.fixed_faces:
-        face = [-NORMAL_DIRECTION * e for e in face]  
-        single_line = " ".join(map(str, face))
-        gemotry_text += f"{face_index}  {single_line} fixed\n"  # With a minus sign, to indicate opposite direction for normals to be consistent
-        face_index+=1  
+    gemotry_text += 'faces\n'
+    for i, face in enumerate(se_faces):
+        gemotry_text += f'{i+1}'
+        for edge_of_face in face:
+            gemotry_text += f' {edge_of_face}'
+        if fixed_faces[i]:
+            gemotry_text += ' fixed no_refine'
+        gemotry_text += '\n'
+    gemotry_text += '\n'
 
     # Write bodies
-    gemotry_text += '\nbodies\n'
-    body_index = 1
-    
-    def fix_body_index(index): 
-        # This is some discussting code to fix body indexes, all fixed body faces are added LARGE_NUM
-        # To fix them we replace LARGE_NUM with the number of faces in the context
-        if abs(index) < LARGE_NUM:
-            return str(index)
-        else:
-            sign = -1 if index < 0 else 1
-            abs_index = abs(index) - LARGE_NUM + len(context.faces)
-            return str(sign * abs_index)
-    
-    for body in context.bodies:
-        body_text = " ".join(map(fix_body_index, body))
-        gemotry_text += f"{body_index}\t{body_text} "
-        gemotry_text += 'density 1 volume 1\n'
-        body_index += 1
+    gemotry_text += 'bodies\n'
+    for i, body in enumerate(se_bodies):
+        gemotry_text += f'{i+1}'
+        for face_of_body in body:
+            gemotry_text += f' {face_of_body}'
+        gemotry_text += ' density 1 volume 1\n'
     gemotry_text += '\n'
 
     gemotry_text += 'read\n'  # additional commands to to Surface Evolver
     gemotry_text += 'N\n'  # Set target volume to actual volume
+    gemotry_text += 'set edge color green where interface == 1\n'
+    gemotry_text += 'set face color 3 where fixed\n'
     gemotry_text += 'set edge color 4 where fixed\n'
 
-    return gemotry_text, (max_X - min_X), (max_Y - min_Y), (max_Z - min_Z), edge_length_avg_none_fixed
+    return gemotry_text, volumes_of_mesh, average_edge_length
 
- 

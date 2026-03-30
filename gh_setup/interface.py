@@ -1,18 +1,20 @@
-
 import sys
 import os
-import datetime
 import rhinoscriptsyntax as rs
 if not base_path:
     base_path = r"C:\Evolver"
 sys.path.append(os.path.join(base_path,"surface_evolver_grasshopper"))
 sys.path.append(os.path.join(base_path,"surface_evolver_grasshopper", "py_lib"))
-import se_grasshopper_entery
-se_grasshopper_entery.reload_all_modules()
 
+import importlib
+def import_or_reload(name):
+    if name in sys.modules:
+        return importlib.reload(sys.modules[name])
+    return __import__(name)
+se_grasshopper_entry = import_or_reload("se_grasshopper_entry")
+
+se_grasshopper_entry.reload_all_modules()
 if run_on_change and input_mesh:
-
-
     if not volume_factor:
         volume_factor = 0.5
     if not interactive:
@@ -35,8 +37,8 @@ if run_on_change and input_mesh:
         "result_mesh": {"verts":[], "faces":[]},
         "result_fixed": {"verts":[], "faces":[]}
     }
-    
-    se_grasshopper_entery.run_SE(arguments)
+
+    se_grasshopper_entry.main(arguments)
     result_mesh = rs.AddMesh(arguments["result_mesh"]["verts"], arguments["result_mesh"]["faces"])
     if arguments["result_fixed"]["verts"] and arguments["result_fixed"]["faces"] :
         result_fixed = rs.AddMesh(arguments["result_fixed"]["verts"], arguments["result_fixed"]["faces"])
